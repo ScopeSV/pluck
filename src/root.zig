@@ -39,6 +39,13 @@ pub const Context = struct {
     }
 };
 
+pub const Command = struct {
+    name: []const u8,
+    desc: []const u8,
+    flags: []const Flags = &.{},
+    run: *const fn (Context) anyerror!void,
+};
+
 pub const Positional = struct {
     name: []const u8,
     desc: []const u8,
@@ -51,7 +58,56 @@ pub const Config = struct {
     flags: []const Flags,
     run: *const fn (Context) anyerror!void,
     positionals: ?[]const Positional = null,
+    commands: ?[]const Command = null,
 };
+
+fn matchCommands(alloc: std.mem.Allocator, cfg: Config, arg: []const u8, i: usize) anyerror!bool {
+    const commands = cfg.commands orelse return false;
+    for (commands) |cmd| {
+        if (std.mem.eql(u8, cmd.name, arg)) {
+            const subConfig = Config{
+                .name = cmd.name,
+                .desc = cmd.desc,
+                .userArgs = cfg.userArgs[i..],
+                .flags = cmd.flags,
+                .run = cmd.run,
+            };
+            try parse(alloc, subConfig);
+            return true;
+        }
+    }
+    return false;
+}
+
+fn matchFlags(cfg: Config, arg: []const u8, i: *usize, flagMap: *std.StringHashMap(Value), matched: *bool) !void {
+    for (cfg.flags) |flag| {
+        if (std.mem.eql(u8, flag.long, arg) or std.mem.eql(u8, flag.short, arg)) {
+            if (flag.type == .Bool) {
+                try flagMap.put(flag.long[2..], Value{ .Bool = true });
+                matched.* = true;
+            } else if (flag.type == .Int) {
+                i.* += 1;
+                const v = std.fmt.parseInt(usize, cfg.userArgs[i.*], 10) catch 0;
+                try flagMap.put(flag.long[2..], Value{ .Int = v });
+                matched.* = true;
+            } else if (flag.type == .Str) {
+                i.* += 1;
+                const strArg = cfg.userArgs[i.*];
+                try flagMap.put(flag.long[2..], Value{ .Str = strArg });
+                matched.* = true;
+            }
+        }
+    }
+}
+
+fn handlePositionals(cfg: Config, arg: []const u8, positionalEdx: *usize, flagMap: *std.StringHashMap(Value)) !void {
+    if (cfg.positionals) |positionals| {
+        if (positionalEdx.* < positionals.len) {
+            try flagMap.put(positionals[positionalEdx.*].name, Value{ .Str = arg });
+            positionalEdx.* += 1;
+        }
+    }
+}
 
 pub fn parse(
     alloc: std.mem.Allocator,
@@ -64,33 +120,14 @@ pub fn parse(
     var positionalEdx: usize = 0;
     while (i < cfg.userArgs.len) : (i += 1) {
         const arg = cfg.userArgs[i];
+
+        if (try matchCommands(alloc, cfg, arg, i)) return;
+
         var matched = false;
-        for (cfg.flags) |flag| {
-            if (std.mem.eql(u8, flag.long, arg) or std.mem.eql(u8, flag.short, arg)) {
-                if (flag.type == .Bool) {
-                    try flagMap.put(flag.long[2..], Value{ .Bool = true });
-                    matched = true;
-                } else if (flag.type == .Int) {
-                    i += 1;
-                    const v = std.fmt.parseInt(usize, cfg.userArgs[i], 10) catch 0;
-                    try flagMap.put(flag.long[2..], Value{ .Int = v });
-                    matched = true;
-                } else if (flag.type == .Str) {
-                    i += 1;
-                    const strArg = cfg.userArgs[i];
-                    try flagMap.put(flag.long[2..], Value{ .Str = strArg });
-                    matched = true;
-                }
-            }
-        }
+        try matchFlags(cfg, arg, &i, &flagMap, &matched);
 
         if (!matched) {
-            if (cfg.positionals) |positionals| {
-                if (positionalEdx < positionals.len) {
-                    try flagMap.put(positionals[positionalEdx].name, Value{ .Str = arg });
-                    positionalEdx += 1;
-                }
-            }
+            try handlePositionals(cfg, arg, &positionalEdx, &flagMap);
         }
     }
 
@@ -166,4 +203,229 @@ test "parses positionals" {
         .positionals = &.{.{ .name = "path", .desc = "Some path" }},
     };
     try parse(std.testing.allocator, config);
+}
+
+fn testMultiplePositionals(ctx: Context) !void {
+    try std.testing.expect(std.mem.eql(u8, ctx.flagStr("src"), "from"));
+    try std.testing.expect(std.mem.eql(u8, ctx.flagStr("dst"), "to"));
+}
+
+test "parses multiple positionals in order" {
+    const config = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "from", "to" },
+        .run = &testMultiplePositionals,
+        .flags = testFlags,
+        .positionals = &.{
+            .{ .name = "src", .desc = "Source" },
+            .{ .name = "dst", .desc = "Destination" },
+        },
+    };
+    try parse(std.testing.allocator, config);
+}
+
+fn testCommandRan(ctx: Context) !void {
+    try std.testing.expect(ctx.flagBool("amend") == true);
+    try std.testing.expect(std.mem.eql(u8, ctx.flagStr("message"), "hi"));
+}
+
+fn testShouldNotRun(_: Context) !void {
+    try std.testing.expect(false);
+}
+
+test "runs subcommand with its own flags" {
+    const commitFlags = &[_]Flags{
+        .{ .long = "--amend", .short = "-A", .desc = "Amend", .type = .Bool },
+        .{ .long = "--message", .short = "-m", .desc = "Message", .type = .Str },
+    };
+    const config = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "commit", "--amend", "--message", "hi" },
+        .run = &testShouldNotRun,
+        .flags = testFlags,
+        .commands = &.{
+            .{ .name = "commit", .desc = "Commit", .flags = commitFlags, .run = &testCommandRan },
+        },
+    };
+    try parse(std.testing.allocator, config);
+}
+
+fn testRootRan(ctx: Context) !void {
+    try std.testing.expect(ctx.flagBool("all") == true);
+}
+
+test "falls through to root when no command matches" {
+    const config = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "--all" },
+        .run = &testRootRan,
+        .flags = testFlags,
+        .commands = &.{
+            .{ .name = "commit", .desc = "Commit", .run = &testShouldNotRun },
+        },
+    };
+    try parse(std.testing.allocator, config);
+}
+
+fn testPushRan(ctx: Context) !void {
+    try std.testing.expect(ctx.flagBool("force") == true);
+}
+
+test "selects the right command among multiple" {
+    const pushFlags = &[_]Flags{
+        .{ .long = "--force", .short = "-f", .desc = "Force", .type = .Bool },
+    };
+    const config = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "push", "--force" },
+        .run = &testShouldNotRun,
+        .flags = testFlags,
+        .commands = &.{
+            .{ .name = "commit", .desc = "Commit", .run = &testShouldNotRun },
+            .{ .name = "push", .desc = "Push", .flags = pushFlags, .run = &testPushRan },
+        },
+    };
+    try parse(std.testing.allocator, config);
+}
+
+test "matchFlags sets bool flag and marks matched" {
+    const alloc = std.testing.allocator;
+    var flagMap = std.StringHashMap(Value).init(alloc);
+    defer flagMap.deinit();
+
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "--all" },
+        .flags = testFlags,
+        .run = &testDefaults,
+    };
+
+    var i: usize = 1;
+    var matched = false;
+    try matchFlags(cfg, "--all", &i, &flagMap, &matched);
+
+    try std.testing.expect(matched == true);
+    try std.testing.expect(flagMap.get("all").?.Bool == true);
+}
+
+test "matchFlags parses int flag and advances i" {
+    const alloc = std.testing.allocator;
+    var flagMap = std.StringHashMap(Value).init(alloc);
+    defer flagMap.deinit();
+
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "--depth", "7" },
+        .flags = testFlags,
+        .run = &testDefaults,
+    };
+
+    var i: usize = 1;
+    var matched = false;
+    try matchFlags(cfg, "--depth", &i, &flagMap, &matched);
+
+    try std.testing.expect(matched == true);
+    try std.testing.expect(flagMap.get("depth").?.Int == 7);
+    try std.testing.expect(i == 2);
+}
+
+test "matchFlags leaves matched false for unknown arg" {
+    const alloc = std.testing.allocator;
+    var flagMap = std.StringHashMap(Value).init(alloc);
+    defer flagMap.deinit();
+
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "--unknown" },
+        .flags = testFlags,
+        .run = &testDefaults,
+    };
+
+    var i: usize = 1;
+    var matched = false;
+    try matchFlags(cfg, "--unknown", &i, &flagMap, &matched);
+
+    try std.testing.expect(matched == false);
+    try std.testing.expect(flagMap.count() == 0);
+}
+
+test "handlePositionals stores and advances index" {
+    const alloc = std.testing.allocator;
+    var flagMap = std.StringHashMap(Value).init(alloc);
+    defer flagMap.deinit();
+
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{"test"},
+        .flags = testFlags,
+        .run = &testDefaults,
+        .positionals = &.{ .{ .name = "a", .desc = "" }, .{ .name = "b", .desc = "" } },
+    };
+
+    var idx: usize = 0;
+    try handlePositionals(cfg, "first", &idx, &flagMap);
+    try handlePositionals(cfg, "second", &idx, &flagMap);
+
+    try std.testing.expect(std.mem.eql(u8, flagMap.get("a").?.Str, "first"));
+    try std.testing.expect(std.mem.eql(u8, flagMap.get("b").?.Str, "second"));
+    try std.testing.expect(idx == 2);
+}
+
+test "handlePositionals ignores overflow" {
+    const alloc = std.testing.allocator;
+    var flagMap = std.StringHashMap(Value).init(alloc);
+    defer flagMap.deinit();
+
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{"test"},
+        .flags = testFlags,
+        .run = &testDefaults,
+        .positionals = &.{.{ .name = "only", .desc = "" }},
+    };
+
+    var idx: usize = 0;
+    try handlePositionals(cfg, "first", &idx, &flagMap);
+    try handlePositionals(cfg, "ignored", &idx, &flagMap);
+
+    try std.testing.expect(flagMap.count() == 1);
+    try std.testing.expect(idx == 1);
+}
+
+test "matchCommands returns false when no commands defined" {
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "anything" },
+        .flags = testFlags,
+        .run = &testDefaults,
+    };
+
+    const matched = try matchCommands(std.testing.allocator, cfg, "anything", 1);
+    try std.testing.expect(matched == false);
+}
+
+test "matchCommands returns false when arg doesn't match any command" {
+    const cfg = Config{
+        .name = "Test",
+        .desc = "Test",
+        .userArgs = &.{ "test", "unknown" },
+        .flags = testFlags,
+        .run = &testDefaults,
+        .commands = &.{
+            .{ .name = "commit", .desc = "Commit", .run = &testShouldNotRun },
+        },
+    };
+
+    const matched = try matchCommands(std.testing.allocator, cfg, "unknown", 1);
+    try std.testing.expect(matched == false);
 }

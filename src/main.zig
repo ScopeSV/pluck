@@ -10,6 +10,11 @@ fn testFn(ctx: cli.Context) !void {
     std.debug.print("Positional path: {s}\n", .{path});
 }
 
+fn testSubCmd(ctx: cli.Context) !void {
+    const verbose = ctx.flagBool("verbose");
+    std.debug.print("Subcommand verbose flag: {}\n", .{verbose});
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
     const argsInp = try init.minimal.args.toSlice(arena);
@@ -35,6 +40,21 @@ pub fn main(init: std.process.Init) !void {
         },
         .positionals = &.{
             .{ .name = "path", .desc = "Some path" },
+        },
+        .commands = &.{
+            .{
+                .name = "sub",
+                .desc = "A subcommand",
+                .run = &testSubCmd,
+                .flags = &.{
+                    .{
+                        .long = "--verbose",
+                        .short = "-v",
+                        .desc = "Verbose output",
+                        .type = .Bool,
+                    },
+                },
+            },
         },
     };
 
