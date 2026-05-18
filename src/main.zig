@@ -4,14 +4,14 @@ const Io = std.Io;
 const cli = @import("cli");
 
 fn testFn(ctx: cli.Context) !void {
-    const all = ctx.flagBool("all");
+    const all = ctx.argBool("all");
     std.debug.print("Flag --all is set: {}\n", .{all});
-    const path = ctx.flagStr("path");
+    const path = ctx.argStr("path");
     std.debug.print("Positional path: {s}\n", .{path});
 }
 
 fn testSubCmd(ctx: cli.Context) !void {
-    const verbose = ctx.flagBool("verbose");
+    const verbose = ctx.argBool("verbose");
     std.debug.print("Subcommand verbose flag: {}\n", .{verbose});
 }
 
@@ -58,5 +58,5 @@ pub fn main(init: std.process.Init) !void {
         },
     };
 
-    _ = try cli.parse(arena, config);
+    _ = try cli.run(arena, init.io, config);
 }
