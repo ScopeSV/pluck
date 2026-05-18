@@ -49,7 +49,7 @@ pub fn main(init: std.process.Init) !void {
 - Subcommands with their own flags
 - Auto-generated `--help` / `-h`
 - Auto-generated `--version` / `-v`
-- Clean error returns for missing values and unknown args
+- Clean error returns for missing values, invalid values, and unknown args
 
 ## Accessing parsed values
 
@@ -85,6 +85,7 @@ When the user runs `myapp commit --message "hello"`, pluck dispatches to `commit
 `pluck.run` returns a `RunError` for parsing issues:
 
 - `error.MissingValue` - a flag was given without its required value
+- `error.InvalidValue` - a flag's value could not be parsed (e.g. non-numeric for an `Int` flag)
 - `error.UnknownArg` - an unrecognized argument was passed
 
 User callbacks can return any error - they propagate through.
