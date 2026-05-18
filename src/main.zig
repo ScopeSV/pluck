@@ -1,16 +1,16 @@
 const std = @import("std");
 const Io = std.Io;
 
-const cli = @import("cli");
+const pluck = @import("pluck");
 
-fn testFn(ctx: cli.Context) !void {
+fn testFn(ctx: pluck.Context) !void {
     const all = ctx.argBool("all");
     std.debug.print("Flag --all is set: {}\n", .{all});
     const path = ctx.argStr("path");
     std.debug.print("Positional path: {s}\n", .{path});
 }
 
-fn testSubCmd(ctx: cli.Context) !void {
+fn testSubCmd(ctx: pluck.Context) !void {
     const verbose = ctx.argBool("verbose");
     std.debug.print("Subcommand verbose flag: {}\n", .{verbose});
 }
@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
     const argsInp = try init.minimal.args.toSlice(arena);
 
-    const config = cli.Config{
+    const config = pluck.Config{
         .name = "Zig CLI",
         .desc = "A simple CLI example in Zig",
         .version = "0.1.0",
@@ -59,5 +59,5 @@ pub fn main(init: std.process.Init) !void {
         },
     };
 
-    _ = try cli.run(arena, init.io, config);
+    _ = try pluck.run(arena, init.io, config);
 }

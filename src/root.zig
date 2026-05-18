@@ -15,6 +15,7 @@ pub const FlagType = enum {
 
 pub const RunError = error{
     MissingValue,
+    InvalidValue,
     UnknownArg,
 };
 
@@ -28,7 +29,6 @@ pub const Flag = struct {
 pub const Context = struct {
     alloc: std.mem.Allocator,
     io: Io,
-    msg: []const u8 = "Hello from the CLI parser!",
     userArgs: []const []const u8,
     flags: std.StringHashMap(Value),
 
@@ -80,18 +80,42 @@ fn matchCommands(alloc: std.mem.Allocator, io: Io, cfg: Config, arg: []const u8,
                 .flags = cmd.flags,
                 .run = cmd.run,
             };
-            try run(alloc, io, subConfig);
+            try runImpl(alloc, io, subConfig, false);
             return true;
         }
     }
     return false;
 }
 
+fn flagBareLong(flag: Flag) []const u8 {
+    if (std.mem.startsWith(u8, flag.long, "--")) {
+        return flag.long[2..];
+    }
+    return flag.long;
+}
+
+fn flagBareShort(flag: Flag) []const u8 {
+    if (flag.short.len > 0 and flag.short[0] == '-') {
+        return flag.short[1..];
+    }
+    return flag.short;
+}
+
+fn matchesFlagArg(flag: Flag, arg: []const u8) bool {
+    if (std.mem.startsWith(u8, arg, "--")) {
+        return std.mem.eql(u8, arg[2..], flagBareLong(flag));
+    }
+    if (flag.short.len > 0 and std.mem.startsWith(u8, arg, "-")) {
+        return std.mem.eql(u8, arg[1..], flagBareShort(flag));
+    }
+    return false;
+}
+
 fn matchFlags(cfg: Config, arg: []const u8, i: *usize, flagMap: *std.StringHashMap(Value), matched: *bool) !void {
     for (cfg.flags) |flag| {
-        if (std.mem.eql(u8, flag.long, arg) or std.mem.eql(u8, flag.short, arg)) {
+        if (matchesFlagArg(flag, arg)) {
             if (flag.type == .Bool) {
-                try flagMap.put(flag.long[2..], Value{ .Bool = true });
+                try flagMap.put(flagBareLong(flag), Value{ .Bool = true });
                 matched.* = true;
             } else if (flag.type == .Int) {
                 i.* += 1;
@@ -99,8 +123,10 @@ fn matchFlags(cfg: Config, arg: []const u8, i: *usize, flagMap: *std.StringHashM
                     return RunError.MissingValue;
                 }
 
-                const v = std.fmt.parseInt(usize, cfg.userArgs[i.*], 10) catch 0;
-                try flagMap.put(flag.long[2..], Value{ .Int = v });
+                const v = std.fmt.parseInt(usize, cfg.userArgs[i.*], 10) catch {
+                    return RunError.InvalidValue;
+                };
+                try flagMap.put(flagBareLong(flag), Value{ .Int = v });
                 matched.* = true;
             } else if (flag.type == .Str) {
                 i.* += 1;
@@ -108,7 +134,7 @@ fn matchFlags(cfg: Config, arg: []const u8, i: *usize, flagMap: *std.StringHashM
                     return RunError.MissingValue;
                 }
                 const strArg = cfg.userArgs[i.*];
-                try flagMap.put(flag.long[2..], Value{ .Str = strArg });
+                try flagMap.put(flagBareLong(flag), Value{ .Str = strArg });
                 matched.* = true;
             }
         }
@@ -143,9 +169,9 @@ fn printHelp(cfg: Config) void {
 
     for (cfg.flags) |flag| {
         if (flag.short.len > 0) {
-            std.debug.print("  {s}, {s}: {s}\n", .{ flag.short, flag.long, flag.desc });
+            std.debug.print("  -{s}, --{s}: {s}\n", .{ flagBareShort(flag), flagBareLong(flag), flag.desc });
         } else {
-            std.debug.print("  {s}: {s}\n", .{ flag.long, flag.desc });
+            std.debug.print("  --{s}: {s}\n", .{ flagBareLong(flag), flag.desc });
         }
     }
 
@@ -166,31 +192,14 @@ fn printHelp(cfg: Config) void {
     }
 }
 
-fn matchStandardArgs(cfg: Config) bool {
-    for (cfg.userArgs) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            printHelp(cfg);
-            return true;
-        }
-        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
-            if (cfg.version.len > 0) {
-                std.debug.print("{s}\n", .{cfg.version});
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-pub fn run(
+fn runImpl(
     alloc: std.mem.Allocator,
     io: Io,
     cfg: Config,
+    topLevel: bool,
 ) anyerror!void {
     var flagMap = std.StringHashMap(Value).init(alloc);
     defer flagMap.deinit();
-
-    if (matchStandardArgs(cfg)) return;
 
     var i: usize = 1;
     var positionalEdx: usize = 0;
@@ -203,6 +212,16 @@ pub fn run(
         try matchFlags(cfg, arg, &i, &flagMap, &matched);
 
         if (!matched) {
+            if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                printHelp(cfg);
+                return;
+            }
+            if (topLevel and (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v"))) {
+                if (cfg.version.len > 0) {
+                    std.debug.print("{s}\n", .{cfg.version});
+                }
+                return;
+            }
             const positionalMatch = try matchPositional(cfg, arg, &positionalEdx, &flagMap);
             if (!positionalMatch) {
                 return RunError.UnknownArg;
@@ -211,12 +230,19 @@ pub fn run(
     }
 
     try cfg.run(Context{
-        .msg = "Running the CLI parser!",
         .alloc = alloc,
         .io = io,
         .userArgs = cfg.userArgs,
         .flags = flagMap,
     });
+}
+
+pub fn run(
+    alloc: std.mem.Allocator,
+    io: Io,
+    cfg: Config,
+) anyerror!void {
+    try runImpl(alloc, io, cfg, true);
 }
 
 const testFlags = &[_]Flag{
