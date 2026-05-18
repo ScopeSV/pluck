@@ -61,6 +61,7 @@ pub const Positional = struct {
 pub const Config = struct {
     name: []const u8,
     desc: []const u8,
+    version: []const u8 = "",
     userArgs: []const []const u8,
     flags: []const Flag,
     run: *const fn (Context) anyerror!void,
@@ -127,9 +128,14 @@ fn matchPositional(cfg: Config, arg: []const u8, positionalEdx: *usize, flagMap:
 
 fn printHelp(cfg: Config) void {
     if (cfg.desc.len > 0) {
-        std.debug.print("{s} - {s}\n\n", .{ cfg.name, cfg.desc });
+        std.debug.print("{s} - {s}\n", .{ cfg.name, cfg.desc });
     } else {
-        std.debug.print("{s}\n\n", .{cfg.name});
+        std.debug.print("{s}\n", .{cfg.name});
+    }
+    if (cfg.version.len > 0) {
+        std.debug.print("Version: {s}\n\n", .{cfg.version});
+    } else {
+        std.debug.print("\n", .{});
     }
 
     std.debug.print("Usage:\n", .{});
@@ -160,6 +166,22 @@ fn printHelp(cfg: Config) void {
     }
 }
 
+fn matchStandardArgs(cfg: Config) bool {
+    for (cfg.userArgs) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            printHelp(cfg);
+            return true;
+        }
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            if (cfg.version.len > 0) {
+                std.debug.print("{s}\n", .{cfg.version});
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 pub fn run(
     alloc: std.mem.Allocator,
     io: Io,
@@ -168,12 +190,7 @@ pub fn run(
     var flagMap = std.StringHashMap(Value).init(alloc);
     defer flagMap.deinit();
 
-    for (cfg.userArgs) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            printHelp(cfg);
-            return;
-        }
-    }
+    if (matchStandardArgs(cfg)) return;
 
     var i: usize = 1;
     var positionalEdx: usize = 0;

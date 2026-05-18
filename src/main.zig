@@ -22,6 +22,7 @@ pub fn main(init: std.process.Init) !void {
     const config = cli.Config{
         .name = "Zig CLI",
         .desc = "A simple CLI example in Zig",
+        .version = "0.1.0",
         .userArgs = argsInp,
         .run = &testFn,
         .flags = &.{
