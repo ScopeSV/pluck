@@ -125,6 +125,41 @@ fn matchPositional(cfg: Config, arg: []const u8, positionalEdx: *usize, flagMap:
     return false;
 }
 
+fn printHelp(cfg: Config) void {
+    if (cfg.desc.len > 0) {
+        std.debug.print("{s} - {s}\n\n", .{ cfg.name, cfg.desc });
+    } else {
+        std.debug.print("{s}\n\n", .{cfg.name});
+    }
+
+    std.debug.print("Usage:\n", .{});
+    std.debug.print("  {s} [flags] [positionals] [command]\n\n", .{cfg.name});
+
+    for (cfg.flags) |flag| {
+        if (flag.short.len > 0) {
+            std.debug.print("  {s}, {s}: {s}\n", .{ flag.short, flag.long, flag.desc });
+        } else {
+            std.debug.print("  {s}: {s}\n", .{ flag.long, flag.desc });
+        }
+    }
+
+    if (cfg.positionals) |positionals| {
+        std.debug.print("Positionals:\n", .{});
+        for (positionals) |pos| {
+            std.debug.print("  {s}: {s}\n", .{ pos.name, pos.desc });
+        }
+        std.debug.print("\n", .{});
+    }
+
+    if (cfg.commands) |commands| {
+        std.debug.print("Commands:\n", .{});
+        for (commands) |cmd| {
+            std.debug.print("  {s}: {s}\n", .{ cmd.name, cmd.desc });
+        }
+        std.debug.print("\n", .{});
+    }
+}
+
 pub fn run(
     alloc: std.mem.Allocator,
     io: Io,
@@ -132,6 +167,13 @@ pub fn run(
 ) anyerror!void {
     var flagMap = std.StringHashMap(Value).init(alloc);
     defer flagMap.deinit();
+
+    for (cfg.userArgs) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            printHelp(cfg);
+            return;
+        }
+    }
 
     var i: usize = 1;
     var positionalEdx: usize = 0;
